@@ -1,0 +1,443 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Espresso Shots Tracker</title>
+  <!-- Pico.css for clean mobile-first styling -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <!-- Chart.js for graphs -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    /* Minor tweaks for mobile touch targets and table scroll */
+    .grid { display: grid; gap: .75rem; }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: repeat(3, 1fr); }
+    .nowrap { white-space: nowrap; }
+    .table-wrap { overflow-x: auto; }
+    .btn-row { display: flex; gap: .5rem; flex-wrap: wrap; }
+    .chip { font-size: .9rem; padding: .4rem .7rem; border: 1px solid var(--muted-border-color); border-radius: 999px; cursor: pointer; }
+    .chip[data-active="true"] { background: var(--muted-border-color); }
+    .small { font-size: .85rem; color: var(--muted-color); }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <header>
+      <h1>Espresso Shots</h1>
+      <p class="small">Offline, private, and fast. Data lives in your browser. Export regularly if you care about it.</p>
+    </header>
+
+    <!-- Input card -->
+    <article>
+      <h2>Log a shot</h2>
+      <div class="grid grid-3">
+        <div>
+          <label for="duration">Duration (s)</label>
+          <input id="duration" type="number" inputmode="decimal" placeholder="30" min="0" step="0.1">
+          <div class="btn-row" id="durationPresets"></div>
+        </div>
+        <div>
+          <label for="grind">Grind size</label>
+          <input id="grind" type="text" placeholder="e.g. 4.5 or 8 clicks">
+        </div>
+        <div>
+          <label for="rating">Rating (1–10)</label>
+          <input id="rating" type="number" min="1" max="10" step="1" placeholder="7">
+          <div class="btn-row" id="ratingPresets"></div>
+        </div>
+      </div>
+
+      <div class="grid grid-3">
+        <div>
+          <label for="dose">Dose in (g)</label>
+          <input id="dose" type="number" inputmode="decimal" min="0" step="0.1" placeholder="18">
+        </div>
+        <div>
+          <label for="yield">Yield out (g)</label>
+          <input id="yield" type="number" inputmode="decimal" min="0" step="0.1" placeholder="36">
+        </div>
+        <div>
+          <label for="pressure">Pressure (bar)</label>
+          <input id="pressure" type="number" inputmode="decimal" min="0" step="0.1" placeholder="9">
+        </div>
+      </div>
+
+      <div class="grid">
+        <div>
+          <label for="beans">Beans</label>
+          <input id="beans" type="text" placeholder="Roaster, origin, roast date">
+        </div>
+        <div>
+          <label for="notes">Notes</label>
+          <textarea id="notes" rows="2" placeholder="Taste, channeling, prep notes"></textarea>
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-top:.5rem">
+        <button id="saveShot">Save shot</button>
+        <button class="secondary" id="clearInputs">Clear inputs</button>
+      </div>
+    </article>
+
+    <!-- Summary -->
+    <article>
+      <h2>Summary</h2>
+      <div id="summary" class="grid grid-3">
+        <!-- Filled by JS -->
+      </div>
+    </article>
+
+    <!-- Charts -->
+    <article>
+      <h2>Charts</h2>
+      <div class="grid grid-2">
+        <div>
+          <h4>Duration over time</h4>
+          <canvas id="durationChart" height="240"></canvas>
+        </div>
+        <div>
+          <h4>Rating distribution</h4>
+          <canvas id="ratingChart" height="240"></canvas>
+        </div>
+      </div>
+    </article>
+
+    <!-- Data table -->
+    <article>
+      <h2>All shots</h2>
+      <div class="btn-row">
+        <button id="sortByDate" class="secondary">Sort by date</button>
+        <button id="sortByRating" class="secondary">Sort by rating</button>
+        <button id="sortByDuration" class="secondary">Sort by duration</button>
+      </div>
+      <div class="table-wrap">
+        <table id="shotsTable">
+          <thead>
+            <tr>
+              <th>Date</th>
+              <th class="nowrap">Duration (s)</th>
+              <th>Grind</th>
+              <th>Dose</th>
+              <th>Yield</th>
+              <th>Bar</th>
+              <th>Beans</th>
+              <th>Rating</th>
+              <th>Notes</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody><!-- rows injected --></tbody>
+        </table>
+      </div>
+      <p class="small" id="rowCount"></p>
+    </article>
+
+    <!-- Backup and reset -->
+    <article>
+      <h2>Data</h2>
+      <div class="btn-row">
+        <button id="exportJson">Export JSON</button>
+        <button id="downloadCsv" class="secondary">Download CSV</button>
+        <label class="chip">
+          Import JSON
+          <input id="importJson" type="file" accept="application/json" style="display:none">
+        </label>
+        <button id="resetAll" class="contrast">Reset all data</button>
+      </div>
+      <p class="small">Tip: add this page to your iPhone Home Screen for an app-like experience.</p>
+    </article>
+  </main>
+
+  <script>
+    // Storage key
+    const KEY = "espressoShots.v1";
+
+    // Elements
+    const el = id => document.getElementById(id);
+    const duration = el("duration");
+    const grind = el("grind");
+    const rating = el("rating");
+    const dose = el("dose");
+    const yieldOut = el("yield");
+    const pressure = el("pressure");
+    const beans = el("beans");
+    const notes = el("notes");
+    const saveShot = el("saveShot");
+    const clearInputs = el("clearInputs");
+    const summary = el("summary");
+    const shotsTableBody = document.querySelector("#shotsTable tbody");
+    const rowCount = el("rowCount");
+    const importJson = el("importJson");
+
+    // Presets
+    const durationPresets = [20, 25, 28, 30, 32, 35, 40];
+    const ratingPresets = [6, 7, 8, 9, 10];
+    addChips("durationPresets", durationPresets, v => duration.value = v);
+    addChips("ratingPresets", ratingPresets, v => rating.value = v);
+
+    function addChips(containerId, vals, onPick) {
+      const c = el(containerId);
+      vals.forEach(v => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "chip";
+        b.textContent = v;
+        b.addEventListener("click", () => onPick(v));
+        c.appendChild(b);
+      });
+    }
+
+    // Helpers
+    function load() {
+      try { return JSON.parse(localStorage.getItem(KEY)) || []; }
+      catch { return []; }
+    }
+    function save(arr) { localStorage.setItem(KEY, JSON.stringify(arr)); }
+
+    function toNumber(x) { const n = Number(x); return Number.isFinite(n) ? n : null; }
+
+    function addShot() {
+      const now = new Date();
+      const item = {
+        id: crypto.randomUUID(),
+        ts: now.toISOString(),
+        duration: toNumber(duration.value),
+        grind: (grind.value || "").trim(),
+        rating: toNumber(rating.value),
+        dose: toNumber(dose.value),
+        yield: toNumber(yieldOut.value),
+        pressure: toNumber(pressure.value),
+        beans: (beans.value || "").trim(),
+        notes: (notes.value || "").trim()
+      };
+      if (!item.duration) { alert("Duration is required."); return; }
+      const arr = load();
+      arr.push(item);
+      save(arr);
+      renderAll();
+      clearForm();
+    }
+
+    function clearForm() {
+      for (const i of [duration, grind, rating, dose, yieldOut, pressure, beans, notes]) i.value = "";
+      duration.focus();
+    }
+
+    function deleteShot(id) {
+      const arr = load().filter(x => x.id !== id);
+      save(arr);
+      renderAll();
+    }
+
+    function formatDate(iso) {
+      const d = new Date(iso);
+      return d.toLocaleString([], { year: '2-digit', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+    }
+
+    // Stats
+    function mean(xs) { const v = xs.filter(Number.isFinite); return v.length ? v.reduce((a,b)=>a+b,0)/v.length : null; }
+    function median(xs) {
+      const v = xs.filter(Number.isFinite).slice().sort((a,b)=>a-b);
+      if (!v.length) return null;
+      const m = Math.floor(v.length/2);
+      return v.length % 2 ? v[m] : (v[m-1]+v[m])/2;
+    }
+    function stdev(xs) {
+      const v = xs.filter(Number.isFinite);
+      if (v.length < 2) return null;
+      const m = mean(v);
+      const s2 = v.reduce((a,b)=>a+(b-m)*(b-m),0)/(v.length-1);
+      return Math.sqrt(s2);
+    }
+
+    // Render summary
+    function renderSummary(arr) {
+      const durations = arr.map(x => x.duration);
+      const ratings = arr.map(x => x.rating);
+      const doses = arr.map(x => x.dose);
+      const yields = arr.map(x => x.yield);
+
+      const entries = [
+        ["Count", arr.length],
+        ["Mean duration", fmt(mean(durations), 1, "s")],
+        ["Median duration", fmt(median(durations), 1, "s")],
+        ["SD duration", fmt(stdev(durations), 1, "s")],
+        ["Mean rating", fmt(mean(ratings), 1, "/10")],
+        ["Brew ratio", brewRatio(mean(doseFilter(doses)), mean(yieldFilter(yields)))],
+      ];
+
+      summary.innerHTML = entries.map(([k,v]) => `
+        <div>
+          <hgroup>
+            <h4>${k}</h4>
+            <p class="small">${v ?? "—"}</p>
+          </hgroup>
+        </div>
+      `).join("");
+
+      function fmt(x, d=1, suffix="") { return (x == null) ? null : `${x.toFixed(d)} ${suffix}`.trim(); }
+      function doseFilter(xs){ return xs.filter(Number.isFinite); }
+      function yieldFilter(xs){ return xs.filter(Number.isFinite); }
+      function brewRatio(d, y){
+        if (!Number.isFinite(d) || !Number.isFinite(y) || d === 0) return null;
+        return (y/d).toFixed(2) + " out/in";
+      }
+    }
+
+    // Render table
+    function renderTable(arr) {
+      shotsTableBody.innerHTML = arr.map(x => `
+        <tr>
+          <td>${formatDate(x.ts)}</td>
+          <td class="nowrap">${safeNum(x.duration)}</td>
+          <td>${escapeHtml(x.grind)}</td>
+          <td>${safeNum(x.dose)}</td>
+          <td>${safeNum(x.yield)}</td>
+          <td>${safeNum(x.pressure)}</td>
+          <td>${escapeHtml(x.beans)}</td>
+          <td>${safeNum(x.rating)}</td>
+          <td>${escapeHtml(x.notes)}</td>
+          <td><button class="secondary" onclick="deleteShot('${x.id}')">Delete</button></td>
+        </tr>
+      `).join("");
+      rowCount.textContent = arr.length ? `${arr.length} shots` : "No shots yet.";
+    }
+
+    function safeNum(n) { return Number.isFinite(n) ? String(n) : ""; }
+    function escapeHtml(s) { return (s || "").replace(/[&<>"']/g, m => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m])); }
+
+    // Charts
+    let durationChart, ratingChart;
+    function renderCharts(arr) {
+      const labels = arr.map(x => new Date(x.ts));
+      const durations = arr.map(x => x.duration ?? null);
+      const ratings = arr.map(x => x.rating ?? null);
+
+      // Duration over time
+      const dc = document.getElementById("durationChart");
+      if (durationChart) durationChart.destroy();
+      durationChart = new Chart(dc, {
+        type: "line",
+        data: {
+          labels,
+          datasets: [{ label: "Duration (s)", data: durations }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          parsing: false,
+          scales: {
+            x: { type: "time", time: { unit: "day" }, ticks: { maxRotation: 0 }, adapters: { date: {} } },
+            y: { title: { display: true, text: "Seconds" } }
+          },
+          plugins: { legend: { display: true } }
+        }
+      });
+
+      // Rating histogram
+      const bins = new Array(10).fill(0);
+      ratings.forEach(r => { if (Number.isFinite(r) && r>=1 && r<=10) bins[Math.round(r)-1]++; });
+      const rc = document.getElementById("ratingChart");
+      if (ratingChart) ratingChart.destroy();
+      ratingChart = new Chart(rc, {
+        type: "bar",
+        data: {
+          labels: Array.from({length: 10}, (_,i)=> String(i+1)),
+          datasets: [{ label: "Count", data: bins }]
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          scales: { y: { beginAtZero: true, title: { display: true, text: "Shots" } } },
+          plugins: { legend: { display: false } }
+        }
+      });
+    }
+
+    // Sorting
+    let currentSort = "dateDesc";
+    function sortData(arr) {
+      const a = arr.slice();
+      if (currentSort === "dateDesc") a.sort((x,y)=> new Date(y.ts)-new Date(x.ts));
+      if (currentSort === "ratingDesc") a.sort((x,y)=> (y.rating??-1) - (x.rating??-1));
+      if (currentSort === "durationDesc") a.sort((x,y)=> (y.duration??-1) - (x.duration??-1));
+      return a;
+    }
+
+    // Export, import, CSV
+    function download(filename, text) {
+      const blob = new Blob([text], {type: "application/octet-stream"});
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+    function exportJson() {
+      download("espresso_shots.json", JSON.stringify(load(), null, 2));
+    }
+    function toCsv(arr) {
+      const cols = ["ts","duration","grind","dose","yield","pressure","beans","rating","notes"];
+      const esc = s => `"${String(s??"").replaceAll('"','""')}"`;
+      const head = cols.join(",");
+      const rows = arr.map(r => cols.map(k => esc(r[k])).join(","));
+      return [head, ...rows].join("\n");
+    }
+
+    // Event wiring
+    saveShot.addEventListener("click", addShot);
+    clearInputs.addEventListener("click", clearForm);
+
+    el("exportJson").addEventListener("click", exportJson);
+    el("downloadCsv").addEventListener("click", ()=> download("espresso_shots.csv", toCsv(load())));
+    importJson.addEventListener("change", e => {
+      const f = e.target.files?.[0];
+      if (!f) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(String(reader.result));
+          if (!Array.isArray(data)) throw new Error("Invalid file");
+          // naive validation
+          const cleaned = data.map(r => ({
+            id: r.id || crypto.randomUUID(),
+            ts: r.ts || new Date().toISOString(),
+            duration: toNumber(r.duration),
+            grind: r.grind ?? "",
+            rating: toNumber(r.rating),
+            dose: toNumber(r.dose),
+            yield: toNumber(r.yield),
+            pressure: toNumber(r.pressure),
+            beans: r.beans ?? "",
+            notes: r.notes ?? ""
+          }));
+          save(cleaned);
+          renderAll();
+          alert("Import complete.");
+        } catch {
+          alert("Import failed. File must be a JSON array of entries.");
+        }
+      };
+      reader.readAsText(f);
+      e.target.value = "";
+    });
+
+    el("sortByDate").addEventListener("click", ()=> { currentSort = "dateDesc"; renderAll(); });
+    el("sortByRating").addEventListener("click", ()=> { currentSort = "ratingDesc"; renderAll(); });
+    el("sortByDuration").addEventListener("click", ()=> { currentSort = "durationDesc"; renderAll(); });
+
+    // Render everything
+    function renderAll() {
+      const data = sortData(load());
+      renderSummary(data);
+      renderTable(data);
+      renderCharts(data);
+    }
+
+    // Boot
+    renderAll();
+  </script>
+</body>
+</html>
+
